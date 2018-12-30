@@ -1,15 +1,16 @@
 
 import libtcodpy as libtcod
-from enum import Enum
+from enum import Enum, auto
 
 from game_states import GameStates
-from menus import inventory_menu
+from menus import inventory_menu, level_up_menu, character_screen_menu
 
 
 class RenderOrder(Enum):
-    CORPSE = 1
-    ITEM = 2
-    ACTOR = 3
+    STAIRS = auto()
+    CORPSE = auto()
+    ITEM = auto()
+    ACTOR = auto()
 
 
 def get_names_under_mouse(mouse, entities, fov_map):
@@ -68,8 +69,10 @@ def render_all(window,
                mouse,
                colors,
                game_state):
+    results = []
+
     # draw game map
-    if fov_recompute:
+    if fov_recompute or libtcod.map_is_in_fov(fov_map, mouse.cx, mouse.cy):
         for y in range(game_map.height):
             for x in range(game_map.width):
                 visible = libtcod.map_is_in_fov(fov_map, x, y)
@@ -85,6 +88,9 @@ def render_all(window,
                         libtcod.console_set_char_foreground(window, x, y, libtcod.white)
                         libtcod.console_set_char(window, x, y, '.')
 
+                    if mouse.cx == x and mouse.cy == y:
+                        libtcod.console_set_char_background(window, x, y, libtcod.white, libtcod.BKGND_ALPHA(0.5))
+
                     game_map.tiles[x][y].explored = True
 
                 elif game_map.tiles[x][y].explored:
@@ -97,12 +103,10 @@ def render_all(window,
                         libtcod.console_set_char_foreground(window, x, y, libtcod.lighter_gray)
                         libtcod.console_set_char(window, x, y, '.')
 
-    # get entities in rendering order
-    entities_in_render_order = sorted(entities, key=lambda x: x.render_order.value)
-
     # Draw all entities in rendering order e.g. corpses should be below player.
+    entities_in_render_order = sorted(entities, key=lambda x: x.render_order.value)
     for entity in entities_in_render_order:
-        draw_entity(window, entity, fov_map)
+        draw_entity(window, entity, fov_map, game_map)
 
     # Blit offscreen window to main window
     libtcod.console_blit(window, 0, 0, screen_width, screen_height, 0, 0, 0)
@@ -124,7 +128,7 @@ def render_all(window,
             message.text
         )
 
-    # Draw player HP bar to offscreen UI panel
+    # Draw player info bar to offscreen UI panel
     render_bar(
         ui_panel,
         1,
@@ -135,6 +139,14 @@ def render_all(window,
         player.fighter.max_hp,
         libtcod.light_red,
         libtcod.darker_red
+    )
+    libtcod.console_print_ex(
+        ui_panel,
+        1,
+        3,
+        libtcod.BKGND_NONE,
+        libtcod.LEFT,
+        "Dungeon level: {0}".format(game_map.dungeon_level)
     )
 
     # Draw entity name at mouse position to offscreen UI panel
@@ -166,18 +178,40 @@ def render_all(window,
         else:
             inventory_header = "Press the key next to item to drop it. Press Esc to cancel.\n"
 
-        inventory_menu(
+        results.extend(inventory_menu(
             window,
             inventory_header,
-            player.inventory,
+            player,
             50,
+            screen_width,
+            screen_height,
+            mouse
+        ))
+    elif game_state == GameStates.LEVEL_UP:
+        results.extend(level_up_menu(
+            window,
+            "Level up! Choose a stat to raise:",
+            player,
+            40,
+            screen_width,
+            screen_height,
+            mouse
+        ))
+    elif game_state == GameStates.CHARACTER_SCREEN:
+        character_screen_menu(
+            player,
+            30,
+            10,
             screen_width,
             screen_height
         )
 
+    return results
 
-def draw_entity(window, entity, fov_map):
-    if libtcod.map_is_in_fov(fov_map, entity.x, entity.y):
+
+def draw_entity(window, entity, fov_map, game_map):
+    # If stairs have been discovered, always draw them
+    if libtcod.map_is_in_fov(fov_map, entity.x, entity.y) or (entity.stairs and game_map.tiles[entity.x][entity.y].explored):
         libtcod.console_set_default_foreground(window, entity.color)
         libtcod.console_put_char(window, entity.x, entity.y, entity.char, libtcod.BKGND_NONE)
 

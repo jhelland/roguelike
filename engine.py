@@ -5,7 +5,7 @@ from loader_functions.initialize_new_game import get_constants, get_game_variabl
 from loader_functions.data_loaders import load_game, save_game
 
 from render_functions import clear_all, render_all
-from input_handlers import handle_keys, handle_mouse, handle_main_menu
+from input_handlers import handle_keys, handle_mouse, handle_main_menu_keys, get_main_menu_option_from_index, get_inventory_option_from_index, get_level_up_option_from_index
 from game_states import GameStates
 from game_messages import Message
 from death_functions import kill_monster, kill_player
@@ -53,7 +53,7 @@ def play_game(player,
             )
 
         # Render map, entities, player FOV
-        render_all(
+        menu_click_results = render_all(
             window_main,
             ui_panel,
             entities,
@@ -83,16 +83,30 @@ def play_game(player,
         mouse_action = handle_mouse(mouse)
 
         move = action.get("move")  # player move
-        exit_key_pressed = action.get("exit")
         fullscreen_key_pressed = action.get("fullscreen")
         wait = action.get("wait")  # don't move during turn
         pickup = action.get("pickup")  # pick up item
         show_inventory = action.get("show_inventory")
         inventory_index = action.get("inventory_index")
         drop_inventory = action.get("drop_inventory")
+        take_stairs = action.get("take_stairs")
+        level_up = action.get("level_up")
+        show_character_screen = action.get("show_character_screen")
+        exit_key_pressed = action.get("exit")
 
         left_click = mouse_action.get("left_click")
         right_click = mouse_action.get("right_click")
+
+        # Handle results of inventory item click
+        for result in menu_click_results:
+            item_clicked = result.get("item_clicked")
+
+            if item_clicked:
+                option = get_inventory_option_from_index(item_clicked)
+                option = dict(option, **get_level_up_option_from_index(item_clicked))  # extend dictionary
+
+                inventory_index = option.get("inventory_index")
+                level_up = option.get("level_up")
 
         # Handle player actions if it's their turn
         player_turn_results = []  # To store messages for results of player actions
@@ -148,6 +162,33 @@ def play_game(player,
             elif game_state == GameStates.DROP_INVENTORY:
                 player_turn_results.extend(player.inventory.drop_item(item))
 
+        # Handle player taking stairs down
+        if take_stairs and game_state == GameStates.PLAYER_TURN:
+            for entity in entities:
+                if entity.stairs and entity.x == player.x and entity.y == player.y:
+                    entities = game_map.next_floor(player, message_log, constants)
+                    fov_map = initialize_fov(game_map)
+                    fov_recompute = True
+                    libtcod.console_clear(window_main)
+                    break
+            else:
+                message_log.add_message(Message("There are no stairs here.", libtcod.yellow))
+
+        if level_up:
+            if level_up == "hp":
+                player.fighter.base_max_hp += 20
+                player.fighter.hp += 20
+            elif level_up == "str":
+                player.fighter.base_power += 1
+            elif level_up == "def":
+                player.fighter.base_defense += 1
+
+            game_state = prev_game_state
+
+        if show_character_screen:
+            prev_game_state = game_state
+            game_state = GameStates.CHARACTER_SCREEN
+
         # Targeting mode for item.
         # Left click selects target tile, right click cancels targeting.
         if game_state == GameStates.TARGETING:
@@ -167,7 +208,7 @@ def play_game(player,
         # Exit events
         if exit_key_pressed:
             # Exit menu
-            if game_state in (GameStates.SHOW_INVENTORY, game_state.DROP_INVENTORY):
+            if game_state in (GameStates.SHOW_INVENTORY, GameStates.DROP_INVENTORY, GameStates.CHARACTER_SCREEN):
                 game_state = prev_game_state
 
             # Exit targeting mode
@@ -188,8 +229,10 @@ def play_game(player,
             item_added = result.get("item_added")
             item_consumed = result.get("item_consumed")
             item_dropped = result.get("item_dropped")
+            equip = result.get("equip")
             targeting = result.get("targeting")
             targeting_cancelled = result.get("targeting_cancelled")
+            xp = result.get("xp")
 
             if message:
                 message_log.add_message(message)
@@ -214,12 +257,28 @@ def play_game(player,
                 entities.append(item_dropped)
                 game_state = GameStates.ENEMY_TURN
 
+            if equip:
+                equip_results = player.equipment.toggle_equip(equip)
+
+                for equip_result in equip_results:
+                    equipped = equip_result.get("equipped")
+                    unequipped = equip_result.get("unequipped")
+
+                    if equipped:
+                        message_log.add_message(Message("You equipped the {0}.".format(equipped.name)))
+
+                    if unequipped:
+                        message_log.add_message(Message("You unequipped the {0}.".format(unequipped.name)))
+
+                    game_state = GameStates.ENEMY_TURN
+
             # If player uses an item, end turn
             if item_consumed:
                 game_state = GameStates.ENEMY_TURN
 
             if targeting_cancelled:
                 game_state = prev_game_state
+                prev_game_state = GameStates.PLAYER_TURN
                 message_log.add_message(Message("Targeting cancelled."))
 
             if targeting:
@@ -229,6 +288,15 @@ def play_game(player,
                 targeting_item = targeting
 
                 message_log.add_message(targeting_item.item.targeting_message)
+
+            if xp:
+                leveled_up = player.level.add_xp(xp)
+                message_log.add_message(Message("You gain {0} experience points!".format(xp)))
+
+                if leveled_up:
+                    message_log.add_message(Message("You feel power surge through you! Welcome to level {0}.".format(player.level.current_level) + '!', libtcod.yellow))
+                    prev_game_state = game_state
+                    game_state = GameStates.LEVEL_UP
 
         # Handle enemy actions if it's their turn
         if game_state == GameStates.ENEMY_TURN:
@@ -298,12 +366,31 @@ def main():
         libtcod.sys_check_for_event(libtcod.EVENT_KEY_PRESS | libtcod.EVENT_MOUSE, key, mouse)
 
         if show_main_menu:
-            main_menu(
+            action_keyboard = handle_main_menu_keys(key)
+
+            # .get() returns None if not found
+            new_game = bool(action_keyboard.get("new_game"))
+            load_saved_game = bool(action_keyboard.get("load_game"))
+            exit_game = bool(action_keyboard.get("exit"))
+
+            menu_click_results = main_menu(
                 window_main,
                 main_menu_background_image,
                 constants["screen_width"],
-                constants["screen_height"]
+                constants["screen_height"],
+                mouse
             )
+
+            # Handle results of mouse click on menu item
+            for result in menu_click_results:
+                item_clicked = chr(result.get("item_clicked"))
+
+                if item_clicked:
+                    action_mouse = get_main_menu_option_from_index(item_clicked)
+
+                    new_game |= bool(action_mouse.get("new_game"))
+                    load_saved_game |= bool(action_mouse.get("load_game"))
+                    exit_game |= bool(action_mouse.get("exit"))
 
             if show_load_error_message:
                 message_box(
@@ -315,12 +402,6 @@ def main():
                 )
 
             libtcod.console_flush()
-
-            action = handle_main_menu(key)
-
-            new_game = action.get("new_game")
-            load_saved_game = action.get("load_game")
-            exit_game = action.get("exit")
 
             if show_load_error_message and (new_game or load_saved_game or exit_game):
                 show_load_error_message = False

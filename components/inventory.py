@@ -34,7 +34,12 @@ class Inventory:
 
         # Handle player using inventory item
         if item_component.use_function is None:
-            results.append({"message": Message("The {0} cannot be used".format(item_entity.name), libtcod.yellow)})
+            equippable_component = item_entity.equippable
+
+            if equippable_component:
+                results.append({"equip": item_entity})
+            else:
+                results.append({"message": Message("The {0} cannot be used".format(item_entity.name), libtcod.yellow)})
         else:
             # If item requires targeting, initiate that before using
             if item_component.targeting and not (kwargs.get("target_x") or kwargs.get("target_y")):
@@ -60,6 +65,10 @@ class Inventory:
 
     def drop_item(self, item):
         results = []
+
+        # Without this, player can drop an equipped item and still have it equipped.
+        if self.owner.equipment.main_hand == item or self.owner.equipment.off_hand == item:
+            self.owner.equipment.toggle_equip(item)
 
         item.x = self.owner.x
         item.y = self.owner.y
